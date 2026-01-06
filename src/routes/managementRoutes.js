@@ -1,4 +1,4 @@
-// src/routes/managementRoutes.js
+// src/routes/managementRoutes.js postgreSQL updated
 import { Router } from "express";
 import bcrypt from "bcrypt";
 import db from "../config/db.js";

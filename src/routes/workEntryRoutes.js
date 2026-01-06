@@ -1,4 +1,4 @@
-// src/routes/workEntryRoutes.js  (Postgres-ready)
+// src/routes/workEntryRoutes.js (Postgres-ready, cleaned: no legacy rate/pay)
 import { Router } from "express";
 import db from "../config/db.js";
 import { requirePermission } from "../middleware/permission.js";
@@ -30,6 +30,18 @@ function isTrue(v) {
   return v === true || Number(v) === 1;
 }
 
+// numeric helpers
+const toNumOrNull = (v) => {
+  if (v === "" || v == null) return null;
+  const x = Number(v);
+  return Number.isFinite(x) ? x : null;
+};
+
+const toReqNum = (v) => {
+  const x = toNumOrNull(v);
+  return x == null ? null : x;
+};
+
 async function getDaysLimitForUser(req) {
   const userId = req.session?.user?.id;
   const isAdmin = isTrue(req.session?.user?.is_admin);
@@ -46,7 +58,7 @@ async function getDaysLimitForUser(req) {
     LEFT JOIN roles r ON r.id = u.role_id
     WHERE u.id = ?
     `,
-    [userId]
+    [Number(userId)]
   );
 
   const limit =
@@ -63,7 +75,6 @@ async function getDaysLimitForUser(req) {
 async function hasPermissionForReq(req, code) {
   const user = req.session?.user;
   if (!user?.id) return false;
-
   if (isTrue(user.is_admin)) return true;
 
   const row = await db.get(
@@ -78,7 +89,7 @@ async function hasPermissionForReq(req, code) {
        AND COALESCE(p.is_active, FALSE) = TRUE
      LIMIT 1
     `,
-    [user.id, code]
+    [Number(user.id), String(code)]
   );
 
   return !!row;
@@ -87,14 +98,11 @@ async function hasPermissionForReq(req, code) {
 /**
  * Helper: check if a record is editable/deletable by daysLimit.
  * If daysLimit = null => allowed
- *
- * Postgres-safe date limit:
- *   we.work_date::date >= (CURRENT_DATE - (?::int * INTERVAL '1 day'))
  */
 async function ensureRowWithinLimit({ id, companyId, daysLimit }) {
   const dateSql =
     daysLimit != null
-      ? `AND we.work_date::date >= (CURRENT_DATE - (?::int * INTERVAL '1 day'))`
+      ? `AND we.work_date >= (CURRENT_DATE - (?::int * INTERVAL '1 day'))`
       : "";
 
   const sql = `
@@ -111,17 +119,46 @@ async function ensureRowWithinLimit({ id, companyId, daysLimit }) {
   return !!row;
 }
 
-// numeric helpers
-const toNumOrNull = (v) => {
-  if (v === "" || v == null) return null;
-  const x = Number(v);
-  return Number.isFinite(x) ? x : null;
-};
+/* ===========================
+   GET worker month customer total
+   GET /api/work-entries/worker-month-customer-total?companyId=1&workerId=2&month=YYYY-MM
+   NOTE: must be before "/:id"
+   =========================== */
+router.get("/worker-month-customer-total", async (req, res) => {
+  try {
+    const companyId = Number.parseInt(req.query.companyId, 10) || 1;
+    const workerId = Number.parseInt(req.query.workerId, 10);
+    const month = (req.query.month || "").trim();
 
-const toReqNum = (v) => {
-  const x = toNumOrNull(v);
-  return x == null ? null : x;
-};
+    if (!workerId || !month || !/^\d{4}-\d{2}$/.test(month)) {
+      return res
+        .status(400)
+        .json({ error: "companyId, workerId, and month(YYYY-MM) are required." });
+    }
+
+    const start = `${month}-01`;
+    const end = new Date(`${month}-01T00:00:00Z`);
+    end.setUTCMonth(end.getUTCMonth() + 1);
+    const endStr = end.toISOString().slice(0, 10);
+
+    const row = await db.get(
+      `
+      SELECT COALESCE(SUM(customer_total), 0) AS total
+        FROM work_entries
+       WHERE company_id = ?
+         AND worker_id = ?
+         AND work_date >= ?::date
+         AND work_date < ?::date
+      `,
+      [companyId, workerId, start, endStr]
+    );
+
+    res.json({ total: Number(row?.total || 0) });
+  } catch (err) {
+    console.error("GET worker-month-customer-total error:", err);
+    res.status(500).json({ error: "Database error" });
+  }
+});
 
 /* ===========================
    GET all work entries
@@ -135,7 +172,7 @@ router.get("/", async (req, res) => {
     const params = [companyId];
     const dateFilterSql =
       daysLimit != null
-        ? `AND we.work_date::date >= (CURRENT_DATE - (?::int * INTERVAL '1 day'))`
+        ? `AND we.work_date >= (CURRENT_DATE - (?::int * INTERVAL '1 day'))`
         : "";
 
     if (daysLimit != null) params.push(daysLimit);
@@ -214,28 +251,26 @@ router.post("/", async (req, res) => {
       wage_rate,
       wage_total,
 
-      // legacy (optional)
-      rate,
-      pay,
-
       job_no1,
       job_no2,
       work_date,
 
-      // new
       fees_collected,
-
       note,
     } = req.body;
 
     const finalCompanyId = Number(company_id || companyId || 1);
 
-    // required checks
     if (!finalCompanyId || !worker_id || !job_code || !amount || !job_no1 || !work_date) {
       return res.status(400).json({ error: "Missing required fields." });
     }
 
-    if (customer_rate == null || customer_total == null || wage_rate == null || wage_total == null) {
+    if (
+      customer_rate == null ||
+      customer_total == null ||
+      wage_rate == null ||
+      wage_total == null
+    ) {
       return res.status(400).json({
         error: "customer_rate/customer_total/wage_rate/wage_total are required.",
       });
@@ -257,8 +292,12 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "Invalid numeric value in amount/rates/totals." });
     }
 
-    // Fees Collected default: customer_total
     const feesCollectedNum = toNumOrNull(fees_collected);
+    if (feesCollectedNum != null && feesCollectedNum < 0) {
+      return res.status(400).json({ error: "fees_collected cannot be negative." });
+    }
+
+    // default = customer_total
     const finalFeesCollected = feesCollectedNum == null ? customerTotalNum : feesCollectedNum;
 
     const out = await db.tx(async (t) => {
@@ -276,22 +315,21 @@ router.post("/", async (req, res) => {
       const inserted = await t.get(
         `
         INSERT INTO work_entries (
-          company_id, worker_id, job_id, amount,
-          is_bank,
+          company_id, worker_id, job_id,
+          amount, is_bank,
           customer_rate, customer_total,
           wage_tier_id, wage_rate, wage_total,
-          rate, pay,
           job_no1, job_no2, work_date,
           note, fees_collected
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::date, ?, ?)
         RETURNING id
         `,
         [
           finalCompanyId,
           Number(worker_id),
           jobRow.id,
-          amountNum,
 
+          amountNum,
           isTrue(is_bank),
 
           customerRateNum,
@@ -300,9 +338,6 @@ router.post("/", async (req, res) => {
           wage_tier_id != null && wage_tier_id !== "" ? Number(wage_tier_id) : null,
           wageRateNum,
           wageTotalNum,
-
-          toNumOrNull(rate) ?? wageRateNum ?? 0,
-          toNumOrNull(pay) ?? wageTotalNum ?? 0,
 
           String(job_no1).trim(),
           (job_no2 || "").trim() || null,
@@ -463,9 +498,9 @@ router.put("/:id", requirePermission("WORK_ENTRY_EDIT"), async (req, res) => {
       `
       UPDATE work_entries
          SET job_id = ?,
+             worker_id = ?,
              amount = ?,
              is_bank = ?,
-             worker_id = ?,
 
              customer_rate = ?,
              customer_total = ?,
@@ -474,12 +509,9 @@ router.put("/:id", requirePermission("WORK_ENTRY_EDIT"), async (req, res) => {
              wage_rate = ?,
              wage_total = ?,
 
-             rate = ?,
-             pay = ?,
-
              job_no1 = ?,
              job_no2 = ?,
-             work_date = ?,
+             work_date = ?::date,
              note = ?,
              fees_collected = ?
        WHERE id = ?
@@ -487,9 +519,9 @@ router.put("/:id", requirePermission("WORK_ENTRY_EDIT"), async (req, res) => {
       `,
       [
         jobId,
+        Number(worker_id),
         hrs,
         isTrue(is_bank),
-        Number(worker_id),
 
         finalCustomerRate,
         finalCustomerTotal,
@@ -497,9 +529,6 @@ router.put("/:id", requirePermission("WORK_ENTRY_EDIT"), async (req, res) => {
         finalTierId,
         finalWageRate,
         finalWageTotal,
-
-        finalWageRate,  // legacy rate
-        finalWageTotal, // legacy pay
 
         String(job_no1).trim(),
         (job_no2 || "").trim() || null,
@@ -560,46 +589,6 @@ router.delete("/:id", requirePermission("WORK_ENTRY_DELETE"), async (req, res) =
     res.json({ message: "Deleted", changes: result.rowCount });
   } catch (err) {
     console.error("DELETE work_entries error:", err);
-    res.status(500).json({ error: "Database error" });
-  }
-});
-
-/* ===========================
-   GET worker month customer total
-   GET /api/work-entries/worker-month-customer-total?companyId=1&workerId=2&month=YYYY-MM
-   =========================== */
-router.get("/worker-month-customer-total", async (req, res) => {
-  try {
-    const companyId = Number.parseInt(req.query.companyId, 10) || 1;
-    const workerId = Number.parseInt(req.query.workerId, 10);
-    const month = (req.query.month || "").trim();
-
-    if (!workerId || !month || !/^\d{4}-\d{2}$/.test(month)) {
-      return res
-        .status(400)
-        .json({ error: "companyId, workerId, and month(YYYY-MM) are required." });
-    }
-
-    const start = `${month}-01`;
-    const end = new Date(`${month}-01T00:00:00Z`);
-    end.setUTCMonth(end.getUTCMonth() + 1);
-    const endStr = end.toISOString().slice(0, 10);
-
-    const row = await db.get(
-      `
-      SELECT COALESCE(SUM(customer_total), 0) AS total
-        FROM work_entries
-       WHERE company_id = ?
-         AND worker_id = ?
-         AND work_date::date >= ?::date
-         AND work_date::date < ?::date
-      `,
-      [companyId, workerId, start, endStr]
-    );
-
-    res.json({ total: Number(row?.total || 0) });
-  } catch (err) {
-    console.error("GET worker-month-customer-total error:", err);
     res.status(500).json({ error: "Database error" });
   }
 });

@@ -8,13 +8,22 @@ let companyModal = null;
 
 document.addEventListener("DOMContentLoaded", () => {
   const modalEl = document.getElementById("companyModal");
-  companyModal = new bootstrap.Modal(modalEl);
+  if (!modalEl) {
+    console.warn("[companies.js] #companyModal not found (skipping modal init).");
+    return;
+  }
 
-  document.getElementById("searchCompanyCode").addEventListener("input", applyCompanyFilters);
-  document.getElementById("searchCompanyName").addEventListener("input", applyCompanyFilters);
+  companyModal = bootstrap.Modal.getOrCreateInstance(modalEl);
+
+  const codeSearch = document.getElementById("searchCompanyCode");
+  const nameSearch = document.getElementById("searchCompanyName");
+
+  if (codeSearch) codeSearch.addEventListener("input", applyCompanyFilters);
+  if (nameSearch) nameSearch.addEventListener("input", applyCompanyFilters);
 
   loadCompanies();
 });
+
 
 // =================== LOAD COMPANIES ===================
 function loadCompanies() {
@@ -188,21 +197,41 @@ async function loadCompanyRulesIntoModal(companyId) {
 }
 
 window.openEditCompany = function (id) {
-  const c = allCompanies.find(x => x.id === id);
+  const companyId = Number(id);
+  const c = allCompanies.find(x => Number(x.id) === companyId);
   if (!c) return;
 
-  document.getElementById("companyId").value = c.id;
-  document.getElementById("companyName").value = c.name || "";
-  document.getElementById("companyShortCode").value = c.short_code || "";
-  document.getElementById("companyAddress").value = c.address || "";
-  document.getElementById("companyPhone").value = c.phone || "";
+  const idEl = document.getElementById("companyId");
+  const nameEl = document.getElementById("companyName");
+  const codeEl = document.getElementById("companyShortCode");
+  const addrEl = document.getElementById("companyAddress");
+  const phoneEl = document.getElementById("companyPhone");
 
-  // ✅ Open modal immediately (never blocked by rules loading)
+  if (!idEl || !nameEl || !codeEl || !addrEl || !phoneEl) {
+    alert("Company modal form elements not found. Check your HTML IDs.");
+    return;
+  }
+
+  idEl.value = c.id;
+  nameEl.value = c.name || "";
+  codeEl.value = c.short_code || "";
+  addrEl.value = c.address || "";
+  phoneEl.value = c.phone || "";
+
+  if (!companyModal) {
+    const modalEl = document.getElementById("companyModal");
+    if (!modalEl) {
+      alert("companyModal not found in HTML.");
+      return;
+    }
+    companyModal = bootstrap.Modal.getOrCreateInstance(modalEl);
+  }
+
+  // Open modal immediately, then load rules async
   companyModal.show();
-
-  // ✅ Load rules after modal opens (safe)
-  loadCompanyRulesIntoModal(id);
+  loadCompanyRulesIntoModal(companyId);
 };
+
 
 
 window.openCreateCompany = function () {
@@ -221,23 +250,36 @@ window.openCreateCompany = function () {
 
 
 window.saveCompany = async function () {
-  const idRaw = document.getElementById("companyId").value.trim();
+  if (!companyModal) {
+    const modalEl = document.getElementById("companyModal");
+    if (!modalEl) {
+      alert("companyModal not found in HTML.");
+      return;
+    }
+    companyModal = bootstrap.Modal.getOrCreateInstance(modalEl);
+  }
 
-  const payload = {
-    name: document.getElementById("companyName").value.trim(),
-    short_code: document.getElementById("companyShortCode").value.trim(),
-    address: document.getElementById("companyAddress").value.trim(),
-    phone: document.getElementById("companyPhone").value.trim(),
-  };
+  const idRaw = (document.getElementById("companyId")?.value || "").trim();
 
-  if (!payload.name) {
+  const name = (document.getElementById("companyName")?.value || "").trim();
+  const short_code = (document.getElementById("companyShortCode")?.value || "").trim();
+  const address = (document.getElementById("companyAddress")?.value || "").trim();
+  const phone = (document.getElementById("companyPhone")?.value || "").trim();
+
+  if (!name) {
     alert("Company name is required.");
     return;
   }
+  if (!short_code) {
+    alert("Company short code is required.");
+    return;
+  }
+
+  const payload = { name, short_code, address, phone };
 
   const isEdit = !!idRaw;
   const method = isEdit ? "PUT" : "POST";
-  const url = isEdit ? `/api/companies/${idRaw}` : "/api/companies";
+  const url = isEdit ? `/api/companies/${encodeURIComponent(idRaw)}` : "/api/companies";
 
   try {
     const res = await fetch(url, {
@@ -246,33 +288,42 @@ window.saveCompany = async function () {
       body: JSON.stringify(payload),
     });
 
-    const data = await res.json();
+    let data = {};
+    try {
+      data = await res.json();
+    } catch {
+      // backend may return empty body or HTML on error
+    }
+
     if (!res.ok) {
-      alert(data?.error || "Error saving company.");
+      alert(data?.error || `Error saving company (HTTP ${res.status}).`);
       return;
     }
 
-    // ✅ Use correct companyId for rules
-    const companyId = isEdit ? parseInt(idRaw, 10) : data.id;
-    if (!companyId) {
-      alert("Saved company but missing company id response.");
+    const savedCompanyId = isEdit ? Number(idRaw) : Number(data?.id);
+    if (!Number.isFinite(savedCompanyId) || savedCompanyId <= 0) {
+      alert("Saved company but missing company id in response.");
       return;
     }
 
-    await saveCompanyRules(companyId);
+    // Save rules if the rules box exists (create mode might show 'save first')
+    const hasRulesUI = document.querySelectorAll(".company-rule").length > 0;
+    if (hasRulesUI) {
+      await saveCompanyRules(savedCompanyId);
+    }
 
     companyModal.hide();
     loadCompanies();
 
-    // optional: refresh navbar dropdown
     if (typeof window.refreshCompanyDropdown === "function") {
-      window.refreshCompanyDropdown(companyId);
+      window.refreshCompanyDropdown(savedCompanyId);
     }
   } catch (err) {
     console.error("saveCompany error:", err);
-    alert("Error saving company.");
+    alert("Network/server error while saving company.");
   }
 };
+
 
 
 async function saveCompanyRules(companyId) {

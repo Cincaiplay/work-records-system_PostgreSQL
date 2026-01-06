@@ -39,7 +39,13 @@ async function loadWageTiers() {
 
 async function loadJobs() {
   const res = await fetch(`/api/jobs?companyId=${companyId}`);
-  allJobs = await res.json();
+  const data = await res.json();
+
+  // normalize id type
+  allJobs = (data || []).map(j => ({
+    ...j,
+    id: Number(j.id),
+  }));
 
   // remove selections that no longer exist
   const ids = new Set(allJobs.map(j => Number(j.id)));
@@ -47,6 +53,7 @@ async function loadJobs() {
 
   renderTable();
 }
+
 
 function buildTableHeader() {
   const row = document.getElementById("jobsHeadRow");
@@ -293,54 +300,114 @@ window.openCreateJobModal = () => {
   jobModal.show();
 };
 
-window.editJob = id => {
-  const j = allJobs.find(x => x.id === id);
+window.editJob = (id) => {
+  const jobId = Number(id);
+  const j = allJobs.find(x => Number(x.id) === jobId);
   if (!j) return;
 
   document.getElementById("jobId").value = j.id;
-  document.getElementById("jobCode").value = j.job_code;
-  document.getElementById("jobType").value = j.job_type;
-  document.getElementById("normalPrice").value = j.normal_price;
-  document.getElementById("isActive").value = j.is_active;
+  document.getElementById("jobCode").value = j.job_code ?? "";
+  document.getElementById("jobType").value = j.job_type ?? "";
+  document.getElementById("normalPrice").value = j.normal_price ?? 0;
+
+  // if your <select> uses 1/0, convert boolean -> 1/0
+  document.getElementById("isActive").value =
+    (j.is_active === true || Number(j.is_active) === 1) ? 1 : 0;
+
   buildWageInputs(j);
   jobModal.show();
 };
 
 window.saveJob = async () => {
-  const id = document.getElementById("jobId").value;
+  const id = (document.getElementById("jobId")?.value || "").trim();
 
-  const wage_rates = [...document.querySelectorAll(".wage-input")].map(i => ({
-    tier_id: Number(i.dataset.tierId),
-    wage_rate: Number(i.value || 0),
-  }));
+  const jobCodeEl = document.getElementById("jobCode");
+  const jobTypeEl = document.getElementById("jobType");
+  const normalPriceEl = document.getElementById("normalPrice");
+  const isActiveEl = document.getElementById("isActive");
+
+  if (!jobCodeEl || !jobTypeEl || !normalPriceEl || !isActiveEl) {
+    alert("Job form elements not found. Check your modal HTML IDs.");
+    return;
+  }
+
+  const job_code = (jobCodeEl.value || "").trim();
+  const job_type = (jobTypeEl.value || "").trim();
+
+  if (!job_code || !job_type) {
+    alert("Job Code and Job Type are required.");
+    return;
+  }
+
+  const normal_price = Number(normalPriceEl.value);
+  if (!Number.isFinite(normal_price) || normal_price < 0) {
+    alert("Normal Price must be a valid number (>= 0).");
+    return;
+  }
+
+  // If your <select> is "1/0", keep it as 1/0.
+  // If it’s checkbox later, we’ll adjust.
+  const is_active = Number(isActiveEl.value);
+  if (![0, 1].includes(is_active)) {
+    alert("Invalid isActive value (expected 0 or 1).");
+    return;
+  }
+
+  const wage_rates = [...document.querySelectorAll(".wage-input")].map((el) => {
+    const tier_id = Number(el.dataset.tierId);
+    const wage_rate = el.value === "" ? 0 : Number(el.value);
+
+    return {
+      tier_id,
+      wage_rate: Number.isFinite(wage_rate) ? wage_rate : 0,
+    };
+  });
+
+  // Basic validation: tier_id must be valid
+  for (const r of wage_rates) {
+    if (!Number.isFinite(r.tier_id) || r.tier_id <= 0) {
+      alert("Invalid wage tier id found in the form.");
+      return;
+    }
+    if (!Number.isFinite(r.wage_rate) || r.wage_rate < 0) {
+      alert("Wage rate must be a valid number (>= 0).");
+      return;
+    }
+  }
 
   const payload = {
     companyId,
-    job_code: jobCode.value.trim(),
-    job_type: jobType.value.trim(),
-    normal_price: Number(normalPrice.value || 0),
-    is_active: Number(isActive.value || 1),
+    job_code,
+    job_type,
+    normal_price,
+    is_active,
     wage_rates,
   };
 
   const method = id ? "PUT" : "POST";
-  const url = id ? `/api/jobs/${id}?companyId=${companyId}` : `/api/jobs`;
+  const url = id ? `/api/jobs/${encodeURIComponent(id)}?companyId=${companyId}` : `/api/jobs`;
 
-  const res = await fetch(url, {
-    method,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
 
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    alert(data?.error || "Save failed");
-    return;
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      alert(data?.error || "Save failed");
+      return;
+    }
+
+    jobModal?.hide();
+    await loadJobs();
+  } catch (err) {
+    console.error("saveJob error:", err);
+    alert("Network/server error while saving job.");
   }
-
-  jobModal.hide();
-  await loadJobs();
 };
+
 
 window.deleteJob = async (id) => {
   const j = allJobs.find(x => x.id === id);

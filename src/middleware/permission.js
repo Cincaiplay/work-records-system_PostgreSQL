@@ -3,7 +3,7 @@ import db from "../config/db.js";
 
 function isApiRequest(req) {
   return (
-    req.originalUrl.startsWith("/api/") ||
+    req.originalUrl?.startsWith("/api/") ||
     req.headers.accept?.includes("application/json")
   );
 }
@@ -35,7 +35,6 @@ export function requirePermission(code) {
           JOIN permissions p ON p.id = rp.permission_id
          WHERE u.id = ?
            AND p.code = ?
-           AND COALESCE(p.is_active::boolean, false) = true
          LIMIT 1
         `,
         [Number(user.id), String(code)]
@@ -77,7 +76,6 @@ export async function hasPermission(userId, code) {
         JOIN permissions p ON p.id = rp.permission_id
        WHERE u.id = ?
          AND p.code = ?
-         AND COALESCE(p.is_active::boolean, false) = true
        LIMIT 1
       `,
       [Number(userId), String(code)]

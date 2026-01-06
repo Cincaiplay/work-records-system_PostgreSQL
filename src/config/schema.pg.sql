@@ -1,13 +1,4 @@
--- src/config/schema.pg.sql
--- Matches current routes + seed (Postgres)
-
--- Optional: enable uuid etc (not needed)
--- CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-
--- ---------------------------
--- Core tables
--- ---------------------------
-
+-- companies (same as yours)
 CREATE TABLE IF NOT EXISTS companies (
   id          BIGSERIAL PRIMARY KEY,
   name        TEXT NOT NULL,
@@ -17,35 +8,19 @@ CREATE TABLE IF NOT EXISTS companies (
   created_at  TIMESTAMPTZ DEFAULT now()
 );
 
+-- roles: needs days limit + optional company scope
 CREATE TABLE IF NOT EXISTS roles (
-  id                     BIGSERIAL PRIMARY KEY,
-  company_id              BIGINT NULL REFERENCES companies(id) ON DELETE CASCADE,
-  code                   TEXT NOT NULL,
-  name                   TEXT NOT NULL,
-  description            TEXT,
-  work_entries_days_limit INT NULL,
-  created_at             TIMESTAMPTZ DEFAULT now(),
+  id                       BIGSERIAL PRIMARY KEY,
+  company_id               BIGINT REFERENCES companies(id) ON DELETE CASCADE,
+  code                     TEXT NOT NULL,
+  name                     TEXT NOT NULL,
+  description              TEXT,
+  work_entries_days_limit  INT,
+  created_at               TIMESTAMPTZ DEFAULT now(),
   UNIQUE (company_id, code)
 );
 
--- Prevent duplicate "global" roles (company_id IS NULL)
-CREATE UNIQUE INDEX IF NOT EXISTS ux_roles_global_code
-  ON roles (code)
-  WHERE company_id IS NULL;
-
-CREATE TABLE IF NOT EXISTS users (
-  id            BIGSERIAL PRIMARY KEY,
-  company_id    BIGINT REFERENCES companies(id) ON DELETE CASCADE,
-  username      TEXT NOT NULL UNIQUE,
-  email         TEXT,
-  password_hash TEXT NOT NULL,
-  is_active     BOOLEAN NOT NULL DEFAULT TRUE,
-  is_admin      BOOLEAN NOT NULL DEFAULT FALSE,
-  role_id       BIGINT REFERENCES roles(id) ON DELETE SET NULL,
-  created_at    TIMESTAMPTZ DEFAULT now(),
-  UNIQUE (company_id, email)
-);
-
+-- permissions: seed.js uses (code, description) and your middleware checks is_active
 CREATE TABLE IF NOT EXISTS permissions (
   id          BIGSERIAL PRIMARY KEY,
   code        TEXT NOT NULL UNIQUE,
@@ -61,6 +36,20 @@ CREATE TABLE IF NOT EXISTS role_permissions (
   UNIQUE (role_id, permission_id)
 );
 
+-- users: must have role_id that points to roles
+CREATE TABLE IF NOT EXISTS users (
+  id            BIGSERIAL PRIMARY KEY,
+  company_id    BIGINT REFERENCES companies(id) ON DELETE CASCADE,
+  username      TEXT NOT NULL UNIQUE,
+  email         TEXT,
+  password_hash TEXT NOT NULL,
+  is_active     BOOLEAN NOT NULL DEFAULT TRUE,
+  is_admin      BOOLEAN NOT NULL DEFAULT FALSE,
+  role_id       BIGINT REFERENCES roles(id),
+  created_at    TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (company_id, email)
+);
+
 CREATE TABLE IF NOT EXISTS user_roles (
   id       BIGSERIAL PRIMARY KEY,
   user_id  BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -68,26 +57,17 @@ CREATE TABLE IF NOT EXISTS user_roles (
   UNIQUE (user_id, role_id)
 );
 
-CREATE TABLE IF NOT EXISTS user_permissions (
-  id            BIGSERIAL PRIMARY KEY,
-  user_id       BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  permission_id BIGINT NOT NULL REFERENCES permissions(id) ON DELETE CASCADE,
-  UNIQUE (user_id, permission_id)
+-- wage_tiers / jobs / job_wages (matches your other routes)
+CREATE TABLE IF NOT EXISTS wage_tiers (
+  id         BIGSERIAL PRIMARY KEY,
+  company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  tier_code  TEXT NOT NULL,
+  tier_name  TEXT NOT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  is_active  BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (company_id, tier_code)
 );
-
-CREATE TABLE IF NOT EXISTS user_settings (
-  id                              BIGSERIAL PRIMARY KEY,
-  user_id                          BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  company_id                       BIGINT REFERENCES companies(id) ON DELETE CASCADE,
-  can_see_rates                    BOOLEAN NOT NULL DEFAULT FALSE,
-  work_entries_days_limit_override INT NULL,
-  created_at                       TIMESTAMPTZ DEFAULT now(),
-  UNIQUE (user_id, company_id)
-);
-
--- ---------------------------
--- Business tables
--- ---------------------------
 
 CREATE TABLE IF NOT EXISTS jobs (
   id           BIGSERIAL PRIMARY KEY,
@@ -98,17 +78,6 @@ CREATE TABLE IF NOT EXISTS jobs (
   is_active    BOOLEAN NOT NULL DEFAULT TRUE,
   created_at   TIMESTAMPTZ DEFAULT now(),
   UNIQUE (company_id, job_code)
-);
-
-CREATE TABLE IF NOT EXISTS wage_tiers (
-  id         BIGSERIAL PRIMARY KEY,
-  company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-  tier_code  TEXT NOT NULL,
-  tier_name  TEXT NOT NULL,
-  sort_order INT NOT NULL DEFAULT 0,
-  is_active  BOOLEAN NOT NULL DEFAULT TRUE,
-  created_at TIMESTAMPTZ DEFAULT now(),
-  UNIQUE (company_id, tier_code)
 );
 
 CREATE TABLE IF NOT EXISTS job_wages (
@@ -124,7 +93,6 @@ CREATE TABLE IF NOT EXISTS job_wages (
 CREATE TABLE IF NOT EXISTS workers (
   id                  BIGSERIAL PRIMARY KEY,
   company_id           BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-  legacy_id           BIGINT,
   worker_code         TEXT NOT NULL,
   worker_name         TEXT,
   worker_english_name TEXT,
@@ -132,56 +100,55 @@ CREATE TABLE IF NOT EXISTS workers (
   employment_start    TEXT,
   nationality         TEXT,
   field1              TEXT,
-  wage_tier_id        BIGINT REFERENCES wage_tiers(id) ON DELETE SET NULL,
+  wage_tier_id        BIGINT REFERENCES wage_tiers(id),
   is_active           BOOLEAN NOT NULL DEFAULT TRUE,
   created_at          TIMESTAMPTZ DEFAULT now(),
   UNIQUE (company_id, worker_code)
 );
 
--- IMPORTANT: this is the Postgres version your routes expect
+-- ✅ work_entries: MUST match workEntryRoutes.js
 CREATE TABLE IF NOT EXISTS work_entries (
-  id            BIGSERIAL PRIMARY KEY,
-  company_id    BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  id              BIGSERIAL PRIMARY KEY,
+  company_id      BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
 
-  worker_id     BIGINT REFERENCES workers(id) ON DELETE SET NULL,
-  job_id        BIGINT REFERENCES jobs(id) ON DELETE SET NULL,
+  worker_id       BIGINT NOT NULL REFERENCES workers(id),
+  job_id          BIGINT NOT NULL REFERENCES jobs(id),
 
-  amount        NUMERIC(10,2) NOT NULL DEFAULT 0,
-  is_bank       BOOLEAN NOT NULL DEFAULT FALSE,
+  amount          NUMERIC(10,2) NOT NULL, -- hours / quantity
+  is_bank         BOOLEAN NOT NULL DEFAULT FALSE,
 
-  customer_rate  NUMERIC(12,2) NOT NULL DEFAULT 0,
-  customer_total NUMERIC(12,2) NOT NULL DEFAULT 0,
+  customer_rate   NUMERIC(12,2) NOT NULL,
+  customer_total  NUMERIC(12,2) NOT NULL,
 
-  wage_tier_id  BIGINT REFERENCES wage_tiers(id) ON DELETE SET NULL,
-  wage_rate     NUMERIC(12,2) NOT NULL DEFAULT 0,
-  wage_total    NUMERIC(12,2) NOT NULL DEFAULT 0,
+  wage_tier_id    BIGINT REFERENCES wage_tiers(id),
+  wage_rate       NUMERIC(12,2) NOT NULL,
+  wage_total      NUMERIC(12,2) NOT NULL,
 
-  -- legacy compat fields (your code still writes them)
-  rate          NUMERIC(12,2) NOT NULL DEFAULT 0,
-  pay           NUMERIC(12,2) NOT NULL DEFAULT 0,
+  job_no1         TEXT NOT NULL,
+  job_no2         TEXT,
 
-  job_no1       TEXT NOT NULL,
-  job_no2       TEXT,
-  work_date     DATE NOT NULL,
+  work_date       DATE NOT NULL,
+  fees_collected  NUMERIC(12,2) NOT NULL,
 
-  fees_collected NUMERIC(12,2) NOT NULL DEFAULT 0,
-  note          TEXT,
-  created_at    TIMESTAMPTZ DEFAULT now(),
+  note            TEXT,
+  created_at      TIMESTAMPTZ DEFAULT now(),
 
   UNIQUE (company_id, job_no1)
 );
 
--- Helpful indexes for reports & listing
-CREATE INDEX IF NOT EXISTS ix_work_entries_company_date
-  ON work_entries (company_id, work_date);
 
-CREATE INDEX IF NOT EXISTS ix_work_entries_company_worker_date
-  ON work_entries (company_id, worker_id, work_date);
+-- user_settings: add override used by this route
+CREATE TABLE IF NOT EXISTS user_settings (
+  id                           BIGSERIAL PRIMARY KEY,
+  user_id                       BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  company_id                    BIGINT REFERENCES companies(id) ON DELETE CASCADE,
+  can_see_rates                 BOOLEAN NOT NULL DEFAULT FALSE,
+  work_entries_days_limit_override INT,
+  created_at                    TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (user_id, company_id)
+);
 
--- ---------------------------
--- Rules tables
--- ---------------------------
-
+-- rules tables (your seed uses these)
 CREATE TABLE IF NOT EXISTS rules (
   id          BIGSERIAL PRIMARY KEY,
   code        TEXT NOT NULL UNIQUE,
