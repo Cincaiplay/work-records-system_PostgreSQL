@@ -106,7 +106,7 @@ CREATE TABLE IF NOT EXISTS workers (
   UNIQUE (company_id, worker_code)
 );
 
--- ✅ work_entries: MUST match workEntryRoutes.js
+-- ✅ work_entries
 CREATE TABLE IF NOT EXISTS work_entries (
   id              BIGSERIAL PRIMARY KEY,
   company_id      BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -114,7 +114,7 @@ CREATE TABLE IF NOT EXISTS work_entries (
   worker_id       BIGINT NOT NULL REFERENCES workers(id),
   job_id          BIGINT NOT NULL REFERENCES jobs(id),
 
-  amount          NUMERIC(10,2) NOT NULL, -- hours / quantity
+  amount          NUMERIC(10,2) NOT NULL,
   is_bank         BOOLEAN NOT NULL DEFAULT FALSE,
 
   customer_rate   NUMERIC(12,2) NOT NULL,
@@ -135,7 +135,6 @@ CREATE TABLE IF NOT EXISTS work_entries (
 
   UNIQUE (company_id, job_no1)
 );
-
 
 -- user_settings: add override used by this route
 CREATE TABLE IF NOT EXISTS user_settings (
@@ -164,3 +163,27 @@ CREATE TABLE IF NOT EXISTS company_rules (
   enabled    BOOLEAN NOT NULL DEFAULT TRUE,
   UNIQUE (company_id, rule_code)
 );
+
+
+/* =====================================================
+   Indexes
+===================================================== */
+
+CREATE INDEX IF NOT EXISTS idx_users_company       ON users(company_id);
+CREATE INDEX IF NOT EXISTS idx_workers_company     ON workers(company_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_company        ON jobs(company_id);
+CREATE INDEX IF NOT EXISTS idx_wage_tiers_company  ON wage_tiers(company_id);
+
+CREATE INDEX IF NOT EXISTS idx_job_wages_job       ON job_wages(job_id);
+CREATE INDEX IF NOT EXISTS idx_job_wages_tier      ON job_wages(tier_id);
+
+CREATE INDEX IF NOT EXISTS idx_work_entries_company_date ON work_entries(company_id, work_date);
+CREATE INDEX IF NOT EXISTS idx_work_entries_worker_date  ON work_entries(worker_id, work_date);
+CREATE INDEX IF NOT EXISTS idx_work_entries_job_date     ON work_entries(job_id, work_date);
+
+-- correctness / special cases
+CREATE UNIQUE INDEX IF NOT EXISTS roles_global_code_unique
+ON roles(code) WHERE company_id IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS work_entries_company_jobno2_unique
+ON work_entries(company_id, job_no2) WHERE job_no2 IS NOT NULL;
