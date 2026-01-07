@@ -6,37 +6,36 @@ export function requireAuth(req, res, next) {
   next();
 }
 
-export function requireAdmin(req, res, next) {
+export async function requireAdmin(req, res, next) {
   const userId = Number(req.session?.user?.id);
   if (!Number.isFinite(userId) || userId <= 0) return res.redirect("/login");
 
-  db.get(
-    `SELECT u.is_admin, r.code AS role_code
-       FROM users u
-       LEFT JOIN roles r ON r.id = u.role_id
-      WHERE u.id = ?`,
-    [userId],
-    (err, row) => {
-      if (err) {
-        console.error("requireAdmin db error:", err.message);
-        return res.status(500).send("Server error");
-      }
+  try {
+    const row = await db.get(
+      `SELECT u.is_admin, r.code AS role_code
+         FROM users u
+         LEFT JOIN roles r ON r.id = u.role_id
+        WHERE u.id = ?`,
+      [userId]
+    );
 
-      const isAdmin = Number(row?.is_admin) === 1;
-      const roleCode = String(row?.role_code || "").toUpperCase();
+    const isAdmin = row?.is_admin === true || Number(row?.is_admin) === 1;
+    const roleCode = String(row?.role_code || "").toUpperCase();
 
-      if (isAdmin || roleCode === "ADMIN" || roleCode === "SUPER_ADMIN") {
-        return next();
-      }
-
-      return res.status(403).render("403", {
-        title: "Access denied",
-        active: null,
-        missingPermission: "ADMIN_ONLY",
-        message: "This page is restricted to admin users.",
-        path: req.originalUrl,
-        method: req.method,
-      });
+    if (isAdmin || roleCode === "ADMIN" || roleCode === "SUPER_ADMIN") {
+      return next();
     }
-  );
+
+    return res.status(403).render("403", {
+      title: "Access denied",
+      active: null,
+      missingPermission: "ADMIN_ONLY",
+      message: "This page is restricted to admin users.",
+      path: req.originalUrl,
+      method: req.method,
+    });
+  } catch (err) {
+    console.error("requireAdmin db error:", err.message);
+    return res.status(500).send("Server error");
+  }
 }

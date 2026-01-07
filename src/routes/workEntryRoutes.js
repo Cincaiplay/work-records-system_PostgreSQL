@@ -204,7 +204,7 @@ router.get("/", async (req, res) => {
 
         we.job_no1,
         we.job_no2,
-        we.work_date,
+        we.work_date::text AS work_date,
         we.note,
         we.fees_collected,
         we.created_at

@@ -40,12 +40,23 @@ function buildWorkerOptions(selectEl, workers, selectedWorkerId) {
   }
 }
 
-function formatDateDMY(dateStr) {
+function normalizeYYYYMMDD(v) {
+  if (!v) return "";
+  const s = String(v);
+  // ISO string like 2026-01-06T13:00:00.000Z -> take first 10 chars
+  if (s.includes("T")) return s.slice(0, 10);
+  // already YYYY-MM-DD
+  return s;
+}
+
+function formatDateDMY(dateVal) {
+  const dateStr = normalizeYYYYMMDD(dateVal);
   if (!dateStr) return "-";
   const [y, m, d] = dateStr.split("-");
   if (!y || !m || !d) return dateStr;
   return `${d}/${m}/${y}`;
 }
+
 
 async function loadJobsForCompany(companyId) {
   const res = await fetch(`/api/jobs?companyId=${companyId}`);
@@ -592,7 +603,7 @@ window.openEditEntry = async function (id) {
 
   // fill form
   document.getElementById("editEntryId").value = rec.id;
-  document.getElementById("editWorkDate").value = rec.work_date || "";
+  document.getElementById("editWorkDate").value = normalizeYYYYMMDD(rec.work_date);
   document.getElementById("editJobNo1").value = rec.job_no1 || "";
   document.getElementById("editJobNo2").value = rec.job_no2 || "";
   document.getElementById("editAmount").value = rec.amount ?? "";
